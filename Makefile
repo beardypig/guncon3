@@ -1,20 +1,25 @@
-TOPDIR          := /usr/src/linux-headers-3.13.0-68-generic
-MOD_ROOT        :=
-PWD             := $(shell pwd)
 
-obj-m           := guncon3.o
+ifeq ($(KERNELRELEASE),)
 
-default:
-	$(MAKE) -C $(TOPDIR) SUBDIRS=$(PWD) modules
+KVERSION ?= $(shell uname -r)
+BUILD_DIR ?= /lib/modules/${KVERSION}/build
+
+PWD := $(shell pwd)
+
+modules:
+	$(MAKE) -C $(BUILD_DIR) M=$(PWD) modules
+
+modules_install:
+	$(MAKE) -C $(BUILD_DIR) M=$(PWD) modules_install
 
 clean:
-	rm -f guncon3.o guncon3.ko
-	rm -f guncon3.mod.c guncon3.mod.o
-	rm -f Module.symvers
-	rm -f .guncon3*
-	rm -fr .tmp_versions
+	rm -rf *~ *.o .*.cmd *.mod.c *.ko *.ko.unsigned .depend \
+    	.tmp_versions modules.order Module.symvers Module.markers
 
-install:
-	$(MAKE) -C $(TOPDIR) SUBDIRS=$(PWD) modules_install
-	depmod -a
+.PHONY: modules modules_install clean
 
+else
+
+obj-m := guncon3.o
+
+endif

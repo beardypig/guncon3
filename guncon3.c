@@ -25,12 +25,12 @@
 
 static unsigned long debug = 0;
 module_param(debug, ulong, 0444);
-MODULE_PARM_DESC(debug, "Debugging");
+MODULE_PARM_DESC(debug, "Enable Debugging");
 
 /*
  * Version Information
  */
-#define DRIVER_VERSION "v0.1.0"
+#define DRIVER_VERSION "v0.2.0"
 #define DRIVER_AUTHOR "Beardypig <guncon@beardypig.com>"
 #define DRIVER_DESC "USB GunCon3 Driver"
 #define DRIVER_LICENSE "GPL"
@@ -38,7 +38,6 @@ MODULE_PARM_DESC(debug, "Debugging");
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE(DRIVER_LICENSE);
-char key[8] = {0x01, 0x12, 0x6F, 0x32, 0x24, 0x60, 0x17, 0x21};
 
 static const unsigned char KEY_TABLE[320] = {
         0x75, 0xC3, 0x10, 0x31, 0xB5, 0xD3, 0x69, 0x84, 0x89, 0xBA, 0xD6, 0x89, 0xBD, 0x70, 0x19, 0x8E, 0x58, 0xA8,
@@ -71,6 +70,7 @@ struct usb_guncon3 {
 	struct urb *irq_out;
 	int open;
     int ipipe, opipe;
+    unsigned char key[8];
 
 	unsigned char *idata;
 	unsigned char *odata;
@@ -90,8 +90,8 @@ static const signed short guncon3_buttons[] = {
 
 static const signed short guncon3_sticks[] = {
 	ABS_X, ABS_Y,					/* Aiming */
-	ABS_HAT0X, ABS_HAT0Y,			/* Joystick A */
-	ABS_HAT1X, ABS_HAT1Y,			/* Joystick B */
+    ABS_RX, ABS_RY,			/* Joystick A */
+	ABS_HAT0X, ABS_HAT0Y,			/* Joystick B */
 	-1
 };
 
@@ -104,23 +104,23 @@ MODULE_DEVICE_TABLE(usb, usb_guncon3_id_table);
 
 static int guncon3_decode(unsigned char *data, const unsigned char *key) {
     int x, y, key_index;
-    unsigned char bkey, keyr;
-    unsigned char b_sum = ((data[13] ^ data[12]) + data[11] + data[10] - data[9] - data[8]) ^ data[7];
-    unsigned char a_sum = (((data[6] ^ b_sum) - data[5] - data[4]) ^ data[3]) + data[2] + data[1] - data[0];
+    unsigned char bkey, keyr, a_sum, b_sum, key_offset, byte;
+    b_sum = ((data[13] ^ data[12]) + data[11] + data[10] - data[9] - data[8]) ^ data[7];
+    a_sum = (((data[6] ^ b_sum) - data[5] - data[4]) ^ data[3]) + data[2] + data[1] - data[0];
     if (a_sum != key[7]) {
         if (debug)
             printk(KERN_ERR "checksum mismatch: %02x %02x\n", a_sum, key[7]);
         return -1;
     }
 
-    unsigned char key_offset = (((((key[1] ^ key[2]) - key[3] - key[4]) ^ key[5]) + key[6] - key[7]) ^ data[14]) + (unsigned char)0x26;
+    key_offset = (((((key[1] ^ key[2]) - key[3] - key[4]) ^ key[5]) + key[6] - key[7]) ^ data[14]) + (unsigned char)0x26;
 
     key_index = 4;
 
     //byte E is part of the key offset
     // byte D is ignored, possibly a padding byte - make the checksum workout
     for (x = 12; x >= 0; x--) {
-        unsigned char byte = data[x];
+        byte = data[x];
         for (y = 4; y > 1; y--) { // loop 3 times
             key_offset--;
 
@@ -146,8 +146,7 @@ static void usb_guncon3_irq(struct urb *urb)
 	struct usb_guncon3 *guncon3 = urb->context;
 	unsigned char *data = guncon3->odata;
 	struct input_dev *dev = guncon3->dev;
-	int status;
-	int i, x = 0, y = 0;
+	int status, i;
 	switch (urb->status) {
 	case 0:			/* success */
 		break;
@@ -163,40 +162,40 @@ static void usb_guncon3_irq(struct urb *urb)
     status = guncon3_decode(data, guncon3->idata);
     if (status != 0) {
         // TODO: submit new key
-        printk(KERN_ERR, "guncon3: checksum error\n");
+        printk(KERN_ERR "guncon3: checksum error\n");
         goto resubmit;
     }
 
 	if (debug) {
 		printk(KERN_INFO "guncon3_debug: data :");
-		for(i = 0; i < 15; i++) {
+		for(i = 0; i < 13; i++) {
 			printk("0x%02x ", data[i]);
 		}
 		printk("\n");
 	}
-
-	input_report_key(dev, BTN_TRIGGER, (data[1] & 0x20));
-    input_report_key(dev, BTN_0,  (data[0] & 0x04));    // A
-    input_report_key(dev, BTN_1,  (data[0] & 0x02));
-    input_report_key(dev, BTN_2,  (data[1] & 0x04));    // B
-	input_report_key(dev, BTN_3,  (data[1] & 0x02));
-	input_report_key(dev, BTN_4,  (data[1] & 0x80));    // C
-	input_report_key(dev, BTN_5,  (data[0] & 0x08));
-	input_report_key(dev, BTN_6,  (data[2] & 0x80));    // Joystick buttons
-	input_report_key(dev, BTN_7,  (data[2] & 0x40));
-
 	/* aim */
-	input_report_abs(dev, ABS_X, (data[4] << 8) + data[3]);
-	input_report_abs(dev, ABS_Y, (data[6] << 8) + data[5]);
+	input_report_abs(dev, ABS_X, ((short)data[4] << 8) | (short)data[3]);
+	input_report_abs(dev, ABS_Y, ((short)data[6] << 8) | (short)data[5]);
     // Z axis (data[8] << 8) + data[7]
 
 	/* joystick a/b */
-	input_report_abs(dev, ABS_HAT0X, data[11]);
-	input_report_abs(dev, ABS_HAT0Y, data[12]);
-	input_report_abs(dev, ABS_HAT1X, data[9]);
-	input_report_abs(dev, ABS_HAT1Y, data[10]);
+	input_report_abs(dev, ABS_RX, data[11]);
+	input_report_abs(dev, ABS_RY, data[12]);
+	input_report_abs(dev, ABS_HAT0X, data[9]);
+	input_report_abs(dev, ABS_HAT0Y, data[10]);
 
-	input_sync(dev);
+    /* buttons */
+    input_report_key(dev, BTN_TRIGGER, (data[1] & 0x20));
+    input_report_key(dev, BTN_0, (data[0] & 0x04));    // A
+    input_report_key(dev, BTN_1, (data[0] & 0x02));
+    input_report_key(dev, BTN_2, (data[1] & 0x04));    // B
+    input_report_key(dev, BTN_3, (data[1] & 0x02));
+    input_report_key(dev, BTN_4, (data[1] & 0x80));    // C
+    input_report_key(dev, BTN_5, (data[0] & 0x08));
+    input_report_key(dev, BTN_6, (data[2] & 0x80));    // Joystick buttons
+    input_report_key(dev, BTN_7, (data[2] & 0x40));
+
+    input_sync(dev);
 
 resubmit:
 	status = usb_submit_urb(urb, GFP_ATOMIC);
@@ -230,6 +229,9 @@ static int usb_guncon3_open(struct input_dev *dev)
 	struct usb_guncon3 *guncon3 = input_get_drvdata(dev);
 	int status;
 
+    if (!guncon3)
+        return -EIO;
+
 	if (guncon3->open++)
 		return 0;
 
@@ -257,10 +259,45 @@ static void usb_guncon3_close(struct input_dev *dev)
     }
 }
 
+static int guncon3_init_output(struct usb_interface *intf, struct usb_guncon3 *guncon3)
+{
+    struct usb_endpoint_descriptor *ep_irq_out;
+    int error, maxp;
+
+    guncon3->odata = usb_alloc_coherent(guncon3->usbdev, 15, GFP_ATOMIC, &guncon3->odata_dma);
+    if (!guncon3->odata) {
+        error = -ENOMEM;
+        goto fail1;
+    }
+
+    guncon3->irq_out = usb_alloc_urb(0, GFP_KERNEL);
+    if (!guncon3->irq_out) {
+        error = -ENODEV;
+        goto fail2;
+    }
+
+    ep_irq_out = &intf->cur_altsetting->endpoint[1].desc;
+    maxp = usb_maxpacket(guncon3->usbdev, guncon3->opipe, usb_pipeout(guncon3->opipe));
+
+    // setup the output irq
+    usb_fill_int_urb(guncon3->irq_out, guncon3->usbdev, guncon3->opipe, guncon3->odata,
+                     (maxp > 15 ? 15 : maxp),
+                     usb_guncon3_irq, guncon3, ep_irq_out->bInterval);
+    guncon3->irq_out->transfer_dma = guncon3->odata_dma;
+    guncon3->irq_out->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+    return 0;
+
+fail2:
+    usb_free_coherent(guncon3->usbdev, 8, guncon3->idata, guncon3->idata_dma);
+fail1:
+    printk(KERN_ERR "guncon3: error while setting up output irq\n");
+    return error;
+}
+
 static int guncon3_init_input(struct usb_interface *intf, struct usb_guncon3 *guncon3)
 {
     struct usb_endpoint_descriptor *ep_irq_in;
-    int error;
+    int error, maxp;
 
     guncon3->idata = usb_alloc_coherent(guncon3->usbdev, 8,
                                         GFP_KERNEL, &guncon3->idata_dma);
@@ -278,10 +315,11 @@ static int guncon3_init_input(struct usb_interface *intf, struct usb_guncon3 *gu
     }
 
     ep_irq_in = &intf->cur_altsetting->endpoint[0].desc;
+    maxp = usb_maxpacket(guncon3->usbdev, guncon3->ipipe, usb_pipeout(guncon3->ipipe));
 
     usb_fill_int_urb(guncon3->irq_in, guncon3->usbdev,
                      usb_sndintpipe(guncon3->usbdev, ep_irq_in->bEndpointAddress),
-                     guncon3->idata, 8,
+                     guncon3->idata, (maxp > 8 ? 8 : maxp),
                      guncon3_irq_in, guncon3, ep_irq_in->bInterval);
     guncon3->irq_in->transfer_dma = guncon3->idata_dma;
     guncon3->irq_in->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
@@ -295,6 +333,20 @@ static int guncon3_init_input(struct usb_interface *intf, struct usb_guncon3 *gu
         return error;
 }
 
+static void guncon3_deinit_input(struct usb_guncon3 *guncon3)
+{
+    usb_free_coherent(guncon3->usbdev, 8, guncon3->idata, guncon3->idata_dma);
+    usb_unlink_urb(guncon3->irq_in);
+    usb_free_urb(guncon3->irq_in);
+}
+
+static void guncon3_deinit_output(struct usb_guncon3 *guncon3)
+{
+    usb_free_coherent(guncon3->usbdev, 8, guncon3->odata, guncon3->odata_dma);
+    usb_unlink_urb(guncon3->irq_out);
+    usb_free_urb(guncon3->irq_out);
+}
+
 static int guncon3_send_key(struct usb_guncon3 *guncon3)
 {
     int retval;
@@ -303,18 +355,19 @@ static int guncon3_send_key(struct usb_guncon3 *guncon3)
 
     // TODO: generate key
 
-    guncon3->idata[0] = 0x01;
-    guncon3->idata[1] = 0x12;
-    guncon3->idata[2] = 0x6F;
-    guncon3->idata[3] = 0x32;
-    guncon3->idata[4] = 0x24;
-    guncon3->idata[5] = 0x60;
-    guncon3->idata[6] = 0x17;
-    guncon3->idata[7] = 0x21;
+    guncon3->key[0] = 0x01;
+    guncon3->key[1] = 0x12;
+    guncon3->key[2] = 0x6F;
+    guncon3->key[3] = 0x32;
+    guncon3->key[4] = 0x24;
+    guncon3->key[5] = 0x60;
+    guncon3->key[6] = 0x17;
+    guncon3->key[7] = 0x21;
+    memcpy(guncon3->idata, guncon3->key, 8);
     guncon3->irq_in->transfer_buffer_length = 8;
 
     if (debug)
-        printk(KERN_INFO "guncon3: sending key to gun...\n");
+        printk(KERN_INFO "guncon3: sending init packet to guncon...\n");
 
     retval = usb_submit_urb(guncon3->irq_in, GFP_KERNEL);
 
@@ -330,9 +383,8 @@ static int usb_guncon3_probe(struct usb_interface *intf, const struct usb_device
 	struct input_dev *input_dev;
 	struct usb_endpoint_descriptor *endpoint_in, *endpoint_out;
 	struct usb_host_interface *interface;
-	int maxp, i, status, error;
+	int i, error;
 	char path[64];
-	char *buf;
 
 	interface = intf->cur_altsetting;
 
@@ -340,20 +392,18 @@ static int usb_guncon3_probe(struct usb_interface *intf, const struct usb_device
 	if (interface->desc.bNumEndpoints != 2)
 		return -ENODEV;
 
-	// input
-	endpoint_in = &interface->endpoint[0].desc;
-	if ((endpoint_in->bEndpointAddress & 0x80) || (endpoint_in->bmAttributes & 3) != 3)
-		return -ENODEV;
+	// check the the endpoints are as expected
+    endpoint_in = &interface->endpoint[0].desc;
+    endpoint_out = &interface->endpoint[1].desc;
 
-	// output
-	endpoint_out = &interface->endpoint[1].desc;
-	if (!(endpoint_out->bEndpointAddress & 0x80) || (endpoint_out->bmAttributes & 3) != 3)
-		return -ENODEV;
+    if ((endpoint_in->bEndpointAddress & 0x80) || (endpoint_in->bmAttributes & 3) != 3 || \
+       (!(endpoint_out->bEndpointAddress & 0x80) || (endpoint_out->bmAttributes & 3) != 3))
+        return -ENODEV;
 
+    // allocate memory fo the guncon data
     guncon3 = kzalloc(sizeof(struct usb_guncon3), GFP_KERNEL);
-    if (!guncon3) {
+    if (!guncon3)
         return -ENOMEM;
-    }
 
 	input_dev = input_allocate_device();
 	if (!input_dev) {
@@ -362,43 +412,37 @@ static int usb_guncon3_probe(struct usb_interface *intf, const struct usb_device
 	}
     guncon3->usbdev = usbdev;
     guncon3->dev = input_dev;
+
     guncon3->ipipe = usb_sndintpipe(usbdev, endpoint_in->bEndpointAddress);
     guncon3->opipe = usb_rcvintpipe(usbdev, endpoint_out->bEndpointAddress);
 
-    maxp = usb_maxpacket(usbdev, guncon3->opipe, usb_pipeout(guncon3->opipe));
-
-    guncon3->odata = usb_alloc_coherent(usbdev, 15, GFP_ATOMIC, &guncon3->odata_dma);
-	if (!guncon3->odata) {
-		error = -ENOMEM;
+    error = guncon3_init_output(intf, guncon3);
+    if (error)
         goto err_free_device;
-	}
-
-	guncon3->irq_out = usb_alloc_urb(0, GFP_KERNEL);
-	if (!guncon3->irq_out) {
-        error = -ENODEV;
-        goto err_free_data;
-	}
 
     error = guncon3_init_input(intf, guncon3);
-    if (error) {
-        goto err_free_data;
-    }
+    if (error)
+        goto err_free_output;
 
-	input_dev->evbit[0] = BIT(EV_KEY) | BIT(EV_ABS);
+    // reports keys and absolute position
+    __set_bit(EV_KEY, input_dev->evbit);
+    __set_bit(EV_ABS, input_dev->evbit);
 
+    // the buttons are keys
 	for (i = 0; guncon3_buttons[i] >= 0; ++i)
-		set_bit(guncon3_buttons[i], input_dev->keybit);
+        __set_bit(guncon3_buttons[i], input_dev->keybit);
 
+    // the sticks are abs
 	for (i = 0; guncon3_sticks[i] >= 0; ++i) {
 		signed short t = guncon3_sticks[i];
-		set_bit(t, input_dev->absbit);
+        __set_bit(t, input_dev->absbit);
 		switch (t) {
-			case ABS_X: input_set_abs_params(input_dev, t, -32768, 32767, 0, 0); break;
-			case ABS_Y: input_set_abs_params(input_dev, t, 32767, -32768, 0, 0); break;
-			case ABS_HAT0X:
-            case ABS_HAT1X: input_set_abs_params(input_dev, t, 0, 255, 0, 4); break;
-            case ABS_HAT1Y:
-            case ABS_HAT0Y: input_set_abs_params(input_dev, t, 255, 0, 0, 4); break;
+			case ABS_X: input_set_abs_params(input_dev, t, -32768, 32767, 16, 128); break;
+			case ABS_Y: input_set_abs_params(input_dev, t, 32767, -32768, 16, 128); break;
+			case ABS_RX:
+            case ABS_RY:
+            case ABS_HAT0X:
+            case ABS_HAT0Y: input_set_abs_params(input_dev, t, 0, 255, 4, 8); break;
 		}
 	}
 
@@ -412,15 +456,7 @@ static int usb_guncon3_probe(struct usb_interface *intf, const struct usb_device
 	input_dev->open = usb_guncon3_open;
 	input_dev->close = usb_guncon3_close;
 
-    sprintf(guncon3->name, "GunCon3 %04x:%04x",
-            input_dev->id.vendor, input_dev->id.product);
-
-    // setup the output irq
-    usb_fill_int_urb(guncon3->irq_out, usbdev, guncon3->opipe, guncon3->odata,
-			 (maxp > 15 ? 15 : maxp),
-			 usb_guncon3_irq, guncon3, endpoint_out->bInterval);
-	guncon3->irq_out->transfer_dma = guncon3->odata_dma;
-	guncon3->irq_out->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+    sprintf(guncon3->name, "GunCon3");
 
     guncon3_send_key(guncon3);
 
@@ -432,10 +468,8 @@ static int usb_guncon3_probe(struct usb_interface *intf, const struct usb_device
 	usb_set_intfdata(intf, guncon3);
 
 	return 0;
-
-    err_free_data:
-        usb_unlink_urb(guncon3->irq_out);
-        usb_free_coherent(usbdev, 15, guncon3->odata, guncon3->odata_dma);
+    err_free_output:
+        guncon3_deinit_output(guncon3);
     err_free_device:
         input_free_device(input_dev);
     err_free_guncon:
@@ -450,14 +484,9 @@ static void usb_guncon3_disconnect(struct usb_interface *intf)
 
 	usb_set_intfdata(intf, NULL);
 	if (guncon3) {
-		usb_unlink_urb(guncon3->irq_out);
-		usb_unlink_urb(guncon3->irq_in);
-		input_unregister_device(guncon3->dev);
+		guncon3_deinit_input(guncon3);
+		guncon3_deinit_output(guncon3);
         input_set_drvdata(guncon3->dev, NULL);
-		usb_free_urb(guncon3->irq_out);
-		usb_free_urb(guncon3->irq_in);
-		usb_free_coherent(interface_to_usbdev(intf), 15, guncon3->odata, guncon3->odata_dma);
-		usb_free_coherent(interface_to_usbdev(intf), 8, guncon3->idata, guncon3->idata_dma);
 		kfree(guncon3);
 	}
 }

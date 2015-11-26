@@ -8,6 +8,10 @@ modules.order
 *.ko
 *.obj
 *.elf
+*.cmd
+*.mod.c
+Module.symvers
+.tmp*/
 
 # Precompiled Headers
 *.gch
