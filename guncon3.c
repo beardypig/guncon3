@@ -104,7 +104,9 @@ MODULE_DEVICE_TABLE(usb, usb_guncon3_id_table);
 
 static int guncon3_decode(unsigned char *data, const unsigned char *key) {
     int x, y, key_index;
-    unsigned char bkey, keyr, a_sum, b_sum, key_offset, byte;
+    unsigned char bkey, keyr, byte;
+    char a_sum, b_sum, key_offset;
+
     b_sum = ((data[13] ^ data[12]) + data[11] + data[10] - data[9] - data[8]) ^ data[7];
     a_sum = (((data[6] ^ b_sum) - data[5] - data[4]) ^ data[3]) + data[2] + data[1] - data[0];
     if (a_sum != key[7]) {
